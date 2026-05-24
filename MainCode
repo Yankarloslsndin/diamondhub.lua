@@ -1,0 +1,148 @@
+local correctKey = "DIAMOND123" -- Set your key here
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+
+-- ==========================================
+-- MAIN HUB FUNCTION (Runs after key is correct)
+-- ==========================================
+local function LoadMainHub()
+    local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+    local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+    local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+    local Window = Library:CreateWindow({
+        Title = 'Diamond Hub',
+        Center = true,
+        AutoShow = true,
+        TabPadding = 8,
+        MenuFadeTime = 0.2
+    })
+
+    local Tabs = {
+        Main = Window:AddTab('Main Games'),
+        Shooters = Window:AddTab('Shooters'),
+        Misc = Window:AddTab('Misc & Admin'),
+        ['UI Settings'] = Window:AddTab('UI Settings'),
+    }
+
+    -- RIVALS
+    local RivalsBox = Tabs.Main:AddLeftGroupbox('Rivals')
+    RivalsBox:AddButton({ Text = 'Load Econ (Rivals)', Func = function() loadstring(game:HttpGet('https://raw.githubusercontent.com/EconRCO/Econ/refs/heads/main/Init'))() end })
+    RivalsBox:AddButton({ Text = 'Load Universal Aimbot', Func = function() loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Universal-Esp-Aimbot-Script-209343"))() end })
+
+    -- MURDERERS VS SHERIFF
+    local MVSBox = Tabs.Main:AddLeftGroupbox('Murderers vs Sheriff')
+    MVSBox:AddButton({ Text = 'Load Hitbox Expander', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/example-prog/Hitbox-Expander/refs/heads/main/RScripter"))() end })
+    MVSBox:AddButton({ Text = 'Load Egg Hunt 2026', Func = function() loadstring(game:HttpGet("https://pastebin.com/raw/ksHREdfA"))() end })
+    MVSBox:AddButton({ Text = 'Load Duel Script', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Moligrafi001/Triangulare/main/Loader.lua", true))() end })
+
+    -- BEDWARS
+    local BedWarsBox = Tabs.Main:AddRightGroupbox('BedWars')
+    BedWarsBox:AddButton({ Text = 'Kill Aura, ESP, etc.', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/VapeVoidware/VWRewrite/main/NewMainScript.lua", true))() end })
+    BedWarsBox:AddButton({ Text = 'Silent Aim, ESP, etc.', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/7GrandDadPGN/VapeV4ForRoblox/main/NewMainScript.lua", true))() end })
+
+    -- STREET CITY
+    local StreetBox = Tabs.Main:AddRightGroupbox('Street City')
+    StreetBox:AddButton({ Text = 'Silent Aim, Box Farm', Func = function()  loadstring(game:HttpGet('https://raw.githubusercontent.com/ljjdwawdwd/StreetLife/refs/heads/main/StreetLife.lua'))()
+    end })
+
+    -- ARSENAL
+    local ArsenalBox = Tabs.Shooters:AddLeftGroupbox('Arsenal')
+    ArsenalBox:AddButton({ Text = 'Load Arsenal Script', Func = function() loadstring(game:HttpGet("https://catware.xyz/Arsenal.lua"))() end })
+    ArsenalBox:AddButton({ Text = 'Universal Aimbot', Func = function() loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Universal-Esp-Aimbot-Script-209343"))() end })
+
+    -- PHANTOM FORCES
+    local PFBox = Tabs.Shooters:AddLeftGroupbox('Phantom Forces')
+    PFBox:AddButton({ Text = 'Aimbot & Features', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/jsdhaijs/autofatrm/refs/heads/main/pflite"))() end })
+
+    -- BAD BUSINESS
+    local BBBox = Tabs.Shooters:AddRightGroupbox('Bad Business')
+    BBBox:AddButton({ Text = 'Aimbot & More', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/dementiaenjoyer/homohack/main/loader.lua"))() end })
+
+    -- PRISON LIFE
+    local PrisonBox = Tabs.Shooters:AddRightGroupbox('Prison Life')
+    PrisonBox:AddButton({ Text = 'Silent Aim, Gun Mods, ESP', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/jsdhaijs/autofatrm/refs/heads/main/prison"))() end })
+    PrisonBox:AddButton({ Text = 'Better Script (No Xeno)', Func = function() loadstring(game:HttpGet("https://raw.githubusercontent.com/f34p9fh3a4/.xyz/refs/heads/main/loader.lua"))() end })
+
+    -- MISC & ADMIN
+    local AdminBox = Tabs.Misc:AddLeftGroupbox('Admin Panel')
+    AdminBox:AddButton({ Text = 'Universal Commands', Tooltip = 'Admin panel made by Diamond Hub', Func = function() loadstring(game:HttpGet("https://pastebin.com/raw/Jv27nwmT",true))() end })
+
+    -- WATERMARK & SETTINGS
+    Library:SetWatermarkVisibility(true)
+    Library:SetWatermark('Diamond Hub | By 216Cra')
+
+    local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+    MenuGroup:AddButton('Unload Hub', function() Library:Unload() end)
+    MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
+    Library.ToggleKeybind = Options.MenuKeybind
+
+    ThemeManager:SetLibrary(Library)
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+    ThemeManager:SetFolder('DiamondHub')
+    SaveManager:SetFolder('DiamondHub/configs')
+    SaveManager:BuildConfigSection(Tabs['UI Settings'])
+    ThemeManager:ApplyToTab(Tabs['UI Settings'])
+    SaveManager:LoadAutoloadConfig()
+end
+
+
+-- ==========================================
+-- KEY SYSTEM UI (Runs first)
+-- ==========================================
+local function LoadKeySystem()
+    local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+
+    local KeyWindow = Library:CreateWindow({
+        Title = 'Diamond Hub | Authentication',
+        Center = true,
+        AutoShow = true,
+        TabPadding = 8,
+        MenuFadeTime = 0.2
+    })
+
+    local KeyTab = KeyWindow:AddTab('Login')
+    local KeyGroup = KeyTab:AddLeftGroupbox('Key Verification')
+
+    local currentKey = ""
+
+    KeyGroup:AddInput('KeyInput', {
+        Default = '',
+        Numeric = false,
+        Finished = false,
+        Text = 'Enter Key',
+        Placeholder = 'Type or paste key here...',
+        Callback = function(Value)
+            currentKey = Value
+        end
+    })
+
+    KeyGroup:AddButton('Verify Key', function()
+        if currentKey == correctKey then
+            Library:Notify('Access Granted! Loading Hub...', 2)
+            task.wait(1.5)
+            Library:Unload() -- Destroys the key UI smoothly
+            task.wait(0.5)
+            LoadMainHub() -- Boot up the actual hub
+        else
+            Library:Notify('Incorrect Key! Join the Discord to get it.', 3)
+        end
+    end)
+
+    KeyGroup:AddButton('Get Key (Copy Discord Link)', function()
+        -- Uses setclipboard to automatically copy your Discord invite
+        if setclipboard then
+            setclipboard("https://discord.gg/p6cyRX7MQv")
+            Library:Notify('Discord link copied to clipboard!', 3)
+        else
+            Library:Notify('Your executor does not support auto-copying.', 3)
+        end
+    end)
+    
+    Library:SetWatermarkVisibility(true)
+    Library:SetWatermark('Diamond Hub | Key Check')
+end
+
+-- Start the script by loading the key system
+LoadKeySystem()
