@@ -1,0 +1,493 @@
+local correctKey = "DIAMOND321"
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local player = Players.LocalPlayer
+
+-- ==========================================
+-- CONFIGURATION TABLES
+-- ==========================================
+_G.CombatSettings = { 
+    Aimbot = { active = false }, 
+    AimAssist = { active = false }, 
+    SilentAim = { active = false },
+    Prediction = 0,
+    Smoothness = 1,
+    SwapThreshold = 500,
+    WallCheck = false,
+    HitPart = "Head"
+}
+
+_G.ESPConfig = { 
+    Enabled = false, 
+    Box = false, 
+    Tracers = false, 
+    HealthBar = false, 
+    Names = false, 
+    FOV = { Enabled = false, Size = 100 },
+    Colors = {
+        FOV = Color3.fromRGB(255, 255, 255),
+        Box = Color3.fromRGB(255, 0, 0),
+        Tracers = Color3.fromRGB(255, 255, 255),
+        Names = Color3.fromRGB(255, 255, 255),
+        HealthBar = Color3.fromRGB(0, 255, 0)
+    }
+}
+
+local MiscSettings = { InfStamina = false, InstaPrompt = false, Invisible = false }
+local MovementVars = { Fly = false, FlySpeed = 50, Speed = 16, Jump = 50 }
+local PlayerUtilVars = { TargetPlayerName = "", GotoLoop = nil }
+
+local VisualCache = {}
+local CurrentTarget = nil
+local TransparencyStorage = {}
+
+local FlyVelocity = nil
+local FlyGyro = nil
+
+-- Initialize Canvas FOV Ring Overlay
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false
+FOVCircle.Thickness = 1
+FOVCircle.Radius = 100
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+
+-- Helper: Hybrid R6 & R15 Hitbox Part Selector
+local function getUnifiedTargetPart(character)
+    if not character then return nil end
+    local selection = _G.CombatSettings.HitPart
+    
+    local boneMap = {
+        ["Head"] = {"Head"},
+        ["Torso"] = {"UpperTorso", "Torso", "HumanoidRootPart"},
+        ["Left Arm"] = {"LeftUpperArm", "LeftArm", "Left Arm"},
+        ["Right Arm"] = {"RightUpperArm", "RightArm", "Right Arm"},
+        ["Left Leg"] = {"LeftUpperLeg", "LeftLeg", "Left Leg"},
+        ["Right Leg"] = {"RightUpperLeg", "RightLeg", "Right Leg"}
+    }
+    
+    local lookFor = boneMap[selection] or {"Head"}
+    for _, partName in ipairs(lookFor) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            return part
+        end
+    end
+    return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+end
+
+-- Helper: Check if target is behind a wall
+local function isBehindWall(targetPart)
+    if not _G.CombatSettings.WallCheck or not targetPart then return false end
+    local castParts = Camera:GetPartsObscuringTarget({Camera.CFrame.Position, targetPart.Position}, {player.Character, targetPart.Parent})
+    return #castParts > 0
+end
+
+-- Helper: Screen Space Selection Filter
+local function getClosestPlayer()
+    local mousePos = UserInputService:GetMouseLocation()
+    local closest, shortest = nil, math.huge
+    
+    if CurrentTarget and CurrentTarget:FindFirstChild("Humanoid") and CurrentTarget.Humanoid.Health > 0 then
+        local trackingPart = getUnifiedTargetPart(CurrentTarget)
+        if trackingPart then
+            local vector, onScreen = Camera:WorldToViewportPoint(trackingPart.Position)
+            if onScreen then
+                local dist = (Vector2.new(vector.X, vector.Y) - mousePos).Magnitude
+                if dist < _G.CombatSettings.SwapThreshold and not isBehindWall(trackingPart) then
+                    return CurrentTarget
+                end
+            end
+        end
+    end
+
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= player and v.Character and v.Character:FindFirstChild("Humanoid") and v.Character.Humanoid.Health > 0 then
+            local trackingPart = getUnifiedTargetPart(v.Character)
+            if trackingPart and not isBehindWall(trackingPart) then
+                local vector, onScreen = Camera:WorldToViewportPoint(trackingPart.Position)
+                if onScreen then
+                    local dist = (Vector2.new(vector.X, vector.Y) - mousePos).Magnitude
+                    if dist < shortest then 
+                        closest = v.Character 
+                        shortest = dist 
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function clearVisualCache(plr)
+    if VisualCache[plr] then
+        for _, object in pairs(VisualCache[plr]) do
+            pcall(function() object:Remove() end)
+        end
+        VisualCache[plr] = nil
+    end
+end
+
+local function endFlight()
+    if FlyVelocity then FlyVelocity:Destroy() FlyVelocity = nil end
+    if FlyGyro then FlyGyro:Destroy() FlyGyro = nil end
+    local char = player.Character
+    local humanoid = char and char:FindFirstChild("Humanoid")
+    if humanoid then humanoid.PlatformStand = false end
+end
+
+local function getServerPlayerNames()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then table.insert(list, p.Name) end
+    end
+    if #list == 0 then table.insert(list, "No other players") end
+    return list
+end
+
+-- ==========================================
+-- MAIN RENDERING & MOVEMENT LOOP
+-- ==========================================
+RunService.RenderStepped:Connect(function()
+    local mousePos = UserInputService:GetMouseLocation()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local humanoid = char and char:FindFirstChild("Humanoid")
+    
+    -- Sync Canvas FOV Properties
+    FOVCircle.Visible = (_G.ESPConfig.FOV.Enabled == true)
+    FOVCircle.Radius = _G.ESPConfig.FOV.Size
+    FOVCircle.Color = _G.ESPConfig.Colors.FOV
+    FOVCircle.Position = mousePos
+
+    -- Aimbot Calculations
+    if _G.CombatSettings.Aimbot.active or _G.CombatSettings.AimAssist.active then
+        CurrentTarget = getClosestPlayer()
+        local targetPart = getUnifiedTargetPart(CurrentTarget)
+        
+        if CurrentTarget and targetPart then
+            local targetVelocity = (CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget:FindFirstChild("Torso") or CurrentTarget.PrimaryPart).Velocity
+            local predictedPos = targetPart.Position + (targetVelocity * (_G.CombatSettings.Prediction / 1000))
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(predictedPos)
+            local target2D = Vector2.new(screenPos.X, screenPos.Y)
+            local distFromMouse = (target2D - mousePos).Magnitude
+            
+            if not _G.ESPConfig.FOV.Enabled or (distFromMouse <= _G.ESPConfig.FOV.Size) then
+                local smoothValue = math.clamp(_G.CombatSettings.Smoothness, 1, 1000)
+                local speedFactor = _G.CombatSettings.Aimbot.active and (1 / smoothValue) or (0.25 / smoothValue)
+                
+                local targetX = mousePos.X + ((target2D.X - mousePos.X) * speedFactor)
+                local targetY = mousePos.Y + ((target2D.Y - mousePos.Y) * speedFactor)
+                
+                if mousemoveabs then mousemoveabs(targetX, targetY)
+                elseif Input and Input.MouseMoveabs then Input.MouseMoveabs(targetX, targetY)
+                elseif mousemoverel then mousemoverel((target2D.X - mousePos.X) * speedFactor, (target2D.Y - mousePos.Y) * speedFactor) end
+            end
+        end
+    else
+        CurrentTarget = nil
+    end
+    
+    -- Dynamic ESP Matrix Processing
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= player then
+            if _G.ESPConfig.Enabled and v.Character and v.Character:FindFirstChild("Humanoid") and v.Character.Humanoid.Health > 0 then
+                local tChar = v.Character
+                local tHrp = tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChild("Torso")
+                local tHead = tChar:FindFirstChild("Head")
+                
+                if tHead and tHrp then
+                    local hrpPos, hrpOnScreen = Camera:WorldToViewportPoint(tHrp.Position)
+                    local headPos, _ = Camera:WorldToViewportPoint(tHead.Position + Vector3.new(0, 1.5, 0))
+                    local legPos, _ = Camera:WorldToViewportPoint(tHrp.Position - Vector3.new(0, 3, 0))
+                    
+                    if hrpOnScreen then
+                        if not VisualCache[v] then
+                            VisualCache[v] = {
+                                Box = Drawing.new("Square"),
+                                Tracer = Drawing.new("Line"),
+                                Name = Drawing.new("Text"),
+                                HealthBar = Drawing.new("Square")
+                            }
+                        end
+                        
+                        local cache = VisualCache[v]
+                        local boxHeight = math.abs(headPos.Y - legPos.Y)
+                        local boxWidth = boxHeight * 0.6
+                        
+                        cache.Box.Visible = _G.ESPConfig.Box
+                        cache.Box.Size = Vector2.new(boxWidth, boxHeight)
+                        cache.Box.Position = Vector2.new(hrpPos.X - boxWidth / 2, hrpPos.Y - boxHeight / 2)
+                        cache.Box.Color = _G.ESPConfig.Colors.Box
+                        cache.Box.Thickness = 1
+                        
+                        cache.Tracer.Visible = _G.ESPConfig.Tracers
+                        cache.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                        cache.Tracer.To = Vector2.new(hrpPos.X, hrpPos.Y)
+                        cache.Tracer.Color = _G.ESPConfig.Colors.Tracers
+                        cache.Tracer.Thickness = 1
+                        
+                        cache.Name.Visible = _G.ESPConfig.Names
+                        cache.Name.Text = v.DisplayName or v.Name
+                        cache.Name.Position = Vector2.new(hrpPos.X, headPos.Y - 15)
+                        cache.Name.Color = _G.ESPConfig.Colors.Names
+                        cache.Name.Center = true
+                        cache.Name.Size = 14
+                        
+                        cache.HealthBar.Visible = _G.ESPConfig.HealthBar
+                        local healthPercent = tChar.Humanoid.Health / tChar.Humanoid.MaxHealth
+                        cache.HealthBar.Size = Vector2.new(2, boxHeight * healthPercent)
+                        cache.HealthBar.Position = Vector2.new((hrpPos.X - boxWidth / 2) - 6, hrpPos.Y - boxHeight / 2 + (boxHeight * (1 - healthPercent)))
+                        cache.HealthBar.Color = _G.ESPConfig.Colors.HealthBar
+                        cache.HealthBar.Filled = true
+                    else clearVisualCache(v) end
+                else clearVisualCache(v) end
+            else clearVisualCache(v) end
+        end
+    end
+
+    -- Smooth Body Physics Fly System
+    if MovementVars.Fly and hrp and humanoid then
+        humanoid.PlatformStand = true
+        
+        if not FlyVelocity then
+            FlyVelocity = Instance.new("BodyVelocity")
+            FlyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            FlyVelocity.Velocity = Vector3.new(0, 0, 0)
+            FlyVelocity.Parent = hrp
+        end
+        
+        if not FlyGyro then
+            FlyGyro = Instance.new("BodyGyro")
+            FlyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            FlyGyro.CFrame = hrp.CFrame
+            FlyGyro.Parent = hrp
+        end
+        
+        local flyDir = Vector3.new(0, 0, 0)
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then flyDir = flyDir + Vector3.new(0, 0, -1) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then flyDir = flyDir + Vector3.new(0, 0, 1) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then flyDir = flyDir + Vector3.new(-1, 0, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then flyDir = flyDir + Vector3.new(1, 0, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then flyDir = flyDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then flyDir = flyDir + Vector3.new(0, -1, 0) end
+        
+        FlyVelocity.Velocity = hrp.CFrame:VectorToWorldSpace(flyDir * MovementVars.FlySpeed)
+        FlyGyro.CFrame = hrp.CFrame
+    else
+        if FlyVelocity or FlyGyro then endFlight() end
+    end
+
+    -- WalkSpeed and JumpPower Loop Enforcer
+    if not MovementVars.Fly and humanoid then
+        humanoid.WalkSpeed = MovementVars.Speed
+        if humanoid.UseJumpPower then humanoid.JumpPower = MovementVars.Jump else humanoid.JumpHeight = MovementVars.Jump / 3.7 end
+    end
+
+    if MiscSettings.InstaPrompt then
+        for _, p in pairs(workspace:GetDescendants()) do if p:IsA("ProximityPrompt") then p.HoldDuration = 0 end end
+    end
+end)
+
+Players.PlayerRemoving:Connect(clearVisualCache)
+
+-- ==========================================
+-- SUBSYSTEM ENFORCERS (Heartbeat Thread)
+-- ==========================================
+RunService.Heartbeat:Connect(function()
+    local char = player.Character
+    if MiscSettings.InfStamina then
+        for _, o in pairs(player:GetDescendants()) do if (o:IsA("NumberValue") or o:IsA("IntValue")) and (string.find(string.lower(o.Name), "stamina") or string.find(string.lower(o.Name), "stam")) then o.Value = 999999 end end
+        if char then for _, o in pairs(char:GetDescendants()) do if (o:IsA("NumberValue") or o:IsA("IntValue")) and (string.find(string.lower(o.Name), "stamina") or string.find(string.lower(o.Name), "stam")) then o.Value = 999999 end end end
+    end
+
+    if char then
+        for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") or p:IsA("Decal") then
+                if MiscSettings.Invisible then
+                    if not TransparencyStorage[p] then TransparencyStorage[p] = p.Transparency end
+                    p.Transparency = 1
+                else
+                    if TransparencyStorage[p] then
+                        p.Transparency = TransparencyStorage[p]
+                        TransparencyStorage[p] = nil
+                    end
+                end
+            end
+        end
+    else
+        table.clear(TransparencyStorage)
+    end
+end)
+
+-- ==========================================
+-- INTERFACE ASSEMBLY FACTORY
+-- ==========================================
+local function LoadMainHub()
+    local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+    local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+    local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+    local Window = Library:CreateWindow({ Title = 'Diamond Universal', Center = true, AutoShow = true })
+    local Tabs = { Combat = Window:AddTab('Combat'), Esp = Window:AddTab('Esp'), Misc = Window:AddTab('Misc'), ['UI Settings'] = Window:AddTab('UI Settings') }
+
+    -- COMBAT LAYER
+    local AimBox = Tabs.Combat:AddLeftGroupbox('Aim Triggers')
+    AimBox:AddToggle('AimbotToggle', { Text = 'Mouse Lock Aimbot', Callback = function(v) _G.CombatSettings.Aimbot.active = v end })
+    AimBox:AddToggle('AimAssistToggle', { Text = 'Mouse Lock Assist', Callback = function(v) _G.CombatSettings.AimAssist.active = v end })
+    AimBox:AddToggle('SilentAimToggle', { Text = 'Silent Aim', Callback = function(v) _G.CombatSettings.SilentAim.active = v end })
+    AimBox:AddToggle('WCheck', { Text = 'Wall Check', Callback = function(v) _G.CombatSettings.WallCheck = v end })
+    
+    AimBox:AddDropdown('HitboxTarget', { 
+        Values = { 'Head', 'Torso', 'Left Arm', 'Right Arm', 'Left Leg', 'Right Leg' }, 
+        Default = 1, Multi = false, Text = 'Target Hitbox Bone (R6/R15)', 
+        Callback = function(v) _G.CombatSettings.HitPart = v end 
+    })
+
+    local AimSliders = Tabs.Combat:AddRightGroupbox('Mouse Lock Modifiers')
+    AimSliders:AddSlider('PredictSlider', { Text = 'Prediction Factor', Default = 0, Min = 0, Max = 1000, Rounding = 0, Callback = function(v) _G.CombatSettings.Prediction = v end })
+    AimSliders:AddSlider('SmoothSlider', { Text = 'Mouse Smoothness', Default = 1, Min = 1, Max = 1000, Rounding = 0, Callback = function(v) _G.CombatSettings.Smoothness = v end })
+    AimSliders:AddSlider('SwapSlider', { Text = 'Target Swap Threshold', Default = 500, Min = 50, Max = 1000, Rounding = 0, Callback = function(v) _G.CombatSettings.SwapThreshold = v end })
+    
+    local FOVBox = Tabs.Combat:AddRightGroupbox('FOV Matrix Overlay')
+    FOVBox:AddToggle('FOVTog', { Text = 'Enable FOV Circle', Callback = function(v) _G.ESPConfig.FOV.Enabled = v end })
+    FOVBox:AddSlider('FOVSize', { Text = 'FOV Radius Size', Default = 100, Min = 10, Max = 1000, Rounding = 0, Callback = function(v) _G.ESPConfig.FOV.Size = v end })
+    FOVBox:AddLabel('FOV Circle Color'):AddColorPicker('FOVCol', { Default = Color3.fromRGB(255, 255, 255), Callback = function(v) _G.ESPConfig.Colors.FOV = v end })
+
+    -- ESP LAYER
+    local ELeft = Tabs.Esp:AddLeftGroupbox('ESP Matrix Toggles')
+    ELeft:AddToggle('EnableESP', { Text = 'Enable Master ESP', Callback = function(v) _G.ESPConfig.Enabled = v end })
+    ELeft:AddToggle('Box', { Text = 'Render Box Bounds', Callback = function(v) _G.ESPConfig.Box = v end })
+    ELeft:AddToggle('Tracer', { Text = 'Render Directional Tracers', Callback = function(v) _G.ESPConfig.Tracers = v end })
+    ELeft:AddToggle('Name', { Text = 'Render Identity Tags', Callback = function(v) _G.ESPConfig.Names = v end })
+    ELeft:AddToggle('Health', { Text = 'Render Health Bars', Callback = function(v) _G.ESPConfig.HealthBar = v end })
+
+    local ERight = Tabs.Esp:AddRightGroupbox('ESP Color Customization')
+    ERight:AddLabel('Box Bounds Color'):AddColorPicker('BoxCol', { Default = Color3.fromRGB(255, 0, 0), Callback = function(v) _G.ESPConfig.Colors.Box = v end })
+    ERight:AddLabel('Tracers Vector Color'):AddColorPicker('TraceCol', { Default = Color3.fromRGB(255, 255, 255), Callback = function(v) _G.ESPConfig.Colors.Tracers = v end })
+    ERight:AddLabel('Identity Tags Color'):AddColorPicker('NameCol', { Default = Color3.fromRGB(255, 255, 255), Callback = function(v) _G.ESPConfig.Colors.Names = v end })
+    ERight:AddLabel('Health Status Color'):AddColorPicker('HealthCol', { Default = Color3.fromRGB(0, 255, 0), Callback = function(v) _G.ESPConfig.Colors.HealthBar = v end })
+
+    -- MISC LAYER
+    local MiscBox = Tabs.Misc:AddLeftGroupbox('Player Utilities')
+    MiscBox:AddToggle('InfStamina', { Text = 'Infinite Stamina', Callback = function(v) MiscSettings.InfStamina = v end })
+    MiscBox:AddToggle('InstaPrompt', { Text = 'Instant Prompt Interaction', Callback = function(v) MiscSettings.InstaPrompt = v end })
+    MiscBox:AddToggle('Invis', { Text = 'Invisibility Cloak', Callback = function(v) MiscSettings.Invisible = v end })
+
+    local MoveBox = Tabs.Misc:AddRightGroupbox('Movement Profiles')
+    MoveBox:AddToggle('FlyToggle', { Text = 'Smooth Engine Fly', Callback = function(v) MovementVars.Fly = v end })
+    MoveBox:AddSlider('FlySpeedSlider', { Text = 'Flight Speed', Default = 50, Min = 5, Max = 500, Rounding = 0, Callback = function(v) MovementVars.FlySpeed = v end })
+    MoveBox:AddSlider('SpeedSlider', { Text = 'Forced Ground WalkSpeed', Default = 16, Min = 16, Max = 500, Rounding = 0, Callback = function(v) MovementVars.Speed = v end })
+    MoveBox:AddSlider('JumpSlider', { Text = 'Forced Jump Vector Power', Default = 50, Min = 0, Max = 500, Rounding = 0, Callback = function(v) MovementVars.Jump = v end })
+
+    -- Server Players Action Router Panel
+    local ServerBox = Tabs.Misc:AddLeftGroupbox('Server Players Router')
+    local PlayerDropdown = ServerBox:AddDropdown('TargetServerPlayer', {
+        Values = getServerPlayerNames(), Default = 1, Multi = false, Text = 'Select Target Player',
+        Callback = function(v) PlayerUtilVars.TargetPlayerName = v end
+    })
+
+    local function refreshDropdown()
+        PlayerDropdown:SetValues(getServerPlayerNames())
+        PlayerDropdown:SetValue(1)
+    end
+    Players.PlayerAdded:Connect(refreshDropdown)
+    Players.PlayerRemoving:Connect(refreshDropdown)
+
+    ServerBox:AddButton('Teleport (TP)', function()
+        local targetPlr = Players:FindFirstChild(PlayerUtilVars.TargetPlayerName)
+        if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            player.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -3)
+        end
+    end)
+
+    ServerBox:AddButton('Goto Follow (Toggle)', function()
+        if PlayerUtilVars.GotoLoop then
+            PlayerUtilVars.GotoLoop:Disconnect()
+            PlayerUtilVars.GotoLoop = nil
+            Library:Notify('Disabled Goto Follow Tracking.', 2)
+        else
+            local targetPlr = Players:FindFirstChild(PlayerUtilVars.TargetPlayerName)
+            if targetPlr then
+                Library:Notify('Enabled Goto Follow Tracking: ' .. targetPlr.Name, 2)
+                PlayerUtilVars.GotoLoop = RunService.Heartbeat:Connect(function()
+                    if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        player.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                    end
+                end)
+            end
+        end
+    end)
+
+    ServerBox:AddButton('Freeze Target', function()
+        local targetPlr = Players:FindFirstChild(PlayerUtilVars.TargetPlayerName)
+        if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") then
+            targetPlr.Character.HumanoidRootPart.Anchored = true
+            Library:Notify('Locally Froze Target: ' .. targetPlr.Name, 2)
+        end
+    end)
+
+    ServerBox:AddButton('Unfreeze Target', function()
+        local targetPlr = Players:FindFirstChild(PlayerUtilVars.TargetPlayerName)
+        if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") then
+            targetPlr.Character.HumanoidRootPart.Anchored = false
+            Library:Notify('Locally Unfroze Target: ' .. targetPlr.Name, 2)
+        end
+    end)
+
+    Library:SetWatermarkVisibility(true)
+    Library:SetWatermark('Diamond Universal | By 216Cra')
+
+    local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+    MenuGroup:AddButton('Unload Universal', function() 
+        if PlayerUtilVars.GotoLoop then PlayerUtilVars.GotoLoop:Disconnect() end
+        endFlight() 
+        Library:Unload() 
+    end)
+    MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
+    Library.ToggleKeybind = Options.MenuKeybind
+
+    ThemeManager:SetLibrary(Library)
+    SaveManager:SetLibrary(Library)
+    ThemeManager:SetFolder('DiamondUniversal')
+    SaveManager:SetFolder('DiamondUniversal/configs')
+    SaveManager:BuildConfigSection(Tabs['UI Settings'])
+    ThemeManager:ApplyToTab(Tabs['UI Settings'])
+end
+
+-- ==========================================
+-- AUTHENTICATION KEY SYSTEM
+-- ==========================================
+local function LoadKeySystem()
+    local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+    local KeyWindow = Library:CreateWindow({ Title = 'Diamond Universal | Authentication', Center = true, AutoShow = true })
+
+    local KeyTab = KeyWindow:AddTab('Login')
+    local KeyGroup = KeyTab:AddLeftGroupbox('Key Verification')
+    local currentKey = ""
+
+    KeyGroup:AddInput('KeyInput', {
+        Default = '', Numeric = false, Finished = false, Text = 'Enter Key', Placeholder = 'Type or paste key here...',
+        Callback = function(Value) currentKey = Value end
+    })
+
+    KeyGroup:AddButton('Verify Key', function()
+        if currentKey == correctKey then
+            Library:Notify('Access Granted! Loading Hub...', 2)
+            task.wait(1.5)
+            Library:Unload()
+            task.wait(0.5)
+            LoadMainHub()
+        else
+            Library:Notify('Incorrect Key Verification Failed!', 3)
+        end
+    end)
+    
+    Library:SetWatermarkVisibility(true)
+    Library:SetWatermark('Diamond Hub | Key Check')
+end
+
+LoadKeySystem()
